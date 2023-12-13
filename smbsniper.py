@@ -12,11 +12,13 @@ import threading
 import getpass
 from os.path import exists
 from impacket.smbconnection import SMBConnection, smb, SessionError
+from impacket.examples.utils import parse_target
 import impacket
 import logging
 import dns.resolver
 from colorama import Fore, Style
 import datetime
+from netaddr import IPRange, AddrFormatError, IPAddress, IPNetwork
 
 try:
     import xlsxwriter
@@ -146,18 +148,34 @@ def db_init(db, sql, close=False):
     # print(Fore.LIGHTYELLOW_EX + 'DB initialized')
 
 
+
+def get_targets(targets):
+    """
+    Get targets from file or string
+    :param targets: List of targets
+    :return: List of IP addresses
+    """
+    ret_targets = []
+    for target in targets:
+        if os.path.exists(target):
+            with open(target, 'r') as target_file:
+                for target_entry in target_file:
+                    ret_targets += parse_targets(target_entry)
+        else:
+            ret_targets += parse_targets(target)
+    return [str(ip) for ip in ret_targets]
 def get_args():
     global args
     parser = argparse.ArgumentParser(description='Handy SMB script',
-                                     usage=f'python3 {sys.argv[0]} -t target (or file) -u user@domain [-p password] [-t threads count]')
+                                     usage=f'python3 {sys.argv[0]} target (or targetfile.txt) -u user@domain [-p password] [-t threads count]')
 
-    parser.add_argument('target', action="store", type=str, help='target\'s ip/fqdn or file with targets')
+    #parser.add_argument('target', action="store", type=str, help='target\'s ip/fqdn or file with targets')
+    parser.add_argument('target', action='store',
+                        help='[[domain/]username[:password]@]<target address or IP range or IP list file>')
+
     parser.add_argument('-t', '--threads', action="store",
                         dest="threads", help='Threads count', default=1, type=int)
-    parser.add_argument('-u', '--user', action="store",
-                        dest="username", help='username in domain/user format')
-    parser.add_argument('-p', '--password', action="store",
-                        dest="password", help='username in domain/user format')
+
     parser.add_argument('-d', '--depth', action="store", type=int,
                         dest="depth", default=3, help='Depth of crawling')
     parser.add_argument('-e', '--exclude', action="store", default='',
@@ -165,29 +183,37 @@ def get_args():
     parser.add_argument('-x', '--xlsx', action="store",
                         dest="xlsx-filename", help='Full results xlsx filename')
     parser.add_argument('-H', '--hash', action="store",
-                        dest="ntlm-hash", help='NTLM Hash')
+                        dest="ntlm-hash", help='NTLM Hash', default='')
+    parser.add_argument('--timeout', action="store", type=float,
+                        dest="timeout", help='timeout for connections', default=0.1)
 
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit()
 
     args = vars(parser.parse_args())
-    try:
-        username = args['username'].split('@')[0]
-        user_domain = args['username'].split('@')[1]
-    except:
-        print(Fore.LIGHTRED_EX + "Wrong username, use user@domain.com format")
-        sys.exit(1)
 
-    if args['password'] and args['ntlm-hash']:
+    args['domain'], args['username'], args['password'], args['address'] = parse_target(args['target'])
+
+    # try:
+    #     username = args['username'].split('@')[0]
+    #     user_domain = args['username'].split('@')[1]
+    # except:
+    #     print(Fore.LIGHTRED_EX + "Wrong username, use user@domain.com format")
+    #     sys.exit(1)
+
+    if args['password'] and args['ntlm-hash'] is not None:
         print(Fore.LIGHTRED_EX + "Are you dumb? Use password OR hash...")
         sys.exit(1)
 
     if not args['password'] and not args['ntlm-hash']:
-        args['password'] = getpass.getpass(prompt='Password: ', stream=None)
+        if not args['username']:
+            print(Fore.LIGHTYELLOW_EX + "No username and password/hash specified, will try null session")
 
-    args['username'] = username
-    args['domain'] = user_domain
+        else:
+            args['password'] = getpass.getpass(prompt='Password: ', stream=None)
+
+
     args['excluded-shares'] = args['excluded-shares'].split(',')
 
     if not args['target']:
@@ -327,7 +353,7 @@ def db_insert_share_content(db, sql, ip=None, share_name=None, parent_folder=Non
     return
 
 
-def check_port(host, port, timeout=1):
+def check_port(host, port, timeout=0.2):
     a_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     a_socket.settimeout(timeout)
     location = (host, port)
@@ -355,14 +381,14 @@ def make_connection(thread_db, thread_sql, user_domain=None, address=None, targe
     """
 
     # first checking ports and updating db info
-    port_445_is_open = check_port(target_ip, 445)
-    port_139_is_open = check_port(target_ip, 139)
+    port_445_is_open = check_port(target_ip, 445, timeout=args['timeout'])
+    # port_139_is_open = check_port(target_ip, 139)
     db_update_host_ports(thread_db, thread_sql, target_ip, port_445_is_open=port_445_is_open,
-                         port_139_is_open=port_139_is_open)
+                         port_139_is_open=False)
 
     try:
         if not port_445_is_open:
-            tqdm.tqdm.write(Fore.LIGHTYELLOW_EX + f"Thr {thread_index} - Port 445 is closed on {address} - {target_ip}")
+            #tqdm.tqdm.write(Fore.LIGHTYELLOW_EX + f"Thr {thread_index} - Port 445 is closed on " + (f'{address} ({target_ip})' if address != target_ip else address))
             closed_445.append(address)
             return
 
@@ -375,10 +401,10 @@ def make_connection(thread_db, thread_sql, user_domain=None, address=None, targe
             connection.login('', '')
             host_info = db_update_host_info_using_connection(thread_db, thread_sql, connection=connection)
 
-            if host_info['host_domain'].lower() != user_domain.lower():
-                tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
-                                f"Thr {thread_index} - Host's {host_info['hostname']} ({host_info['ip']}) domain ({host_info['host_domain']}) not in users domain ({user_domain}), skipping...")
-                return
+            # if host_info['host_domain'].lower() != user_domain.lower():
+            #     tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
+            #                     f"Thr {thread_index} - Host's {host_info['hostname']} ({host_info['ip']}) domain ({host_info['host_domain']}) not in users domain ({user_domain}), skipping...")
+            #     return
 
             # returned connection must be logged off for next logins
             connection.logoff()
@@ -472,18 +498,45 @@ def get_hostname_from_db_by_ip(ip=None):
     return result
 
 
-def parse_target_arg(file=None):
-    if not exists(file):
-        return [file]
+def parse_target_arg(target=None):
+    if not exists(target):
+        if '-' in target:
+            ip_range = target.split('-')
+            try:
+                t = IPRange(ip_range[0], ip_range[1])
+            except AddrFormatError:
+                try:
+                    start_ip = IPAddress(ip_range[0])
+
+                    start_ip_words = list(start_ip.words)
+                    start_ip_words[-1] = ip_range[1]
+                    start_ip_words = [str(v) for v in start_ip_words]
+
+                    end_ip = IPAddress('.'.join(start_ip_words))
+
+                    t = IPRange(start_ip, end_ip)
+                except AddrFormatError:
+                    t = target
+        else:
+            try:
+                t = IPNetwork(target)
+            except AddrFormatError:
+                t = target
+        if type(t) == IPNetwork or type(t) == IPRange:
+            return [str(i) for i in list(t)]
+        else:
+            return [t.strip()]
+
+        return [target]
     else:
         try:
-            with open(file, 'r', encoding='utf8') as reader:
+            with open(target, 'r', encoding='utf8') as reader:
                 targets = reader.read().replace('\r', '').replace(' ', '').split('\n')
             targets = [i for i in targets if i != '']
 
             return targets
         except:
-            logger.error(f"Failed to parse file {file}, try to change file encoding to utf-8")
+            logger.error(f"Failed to parse file {target}, try to change file encoding to utf-8")
 
 
 def is_ip(target=None):
@@ -498,9 +551,13 @@ def resolve_ip_by_nslookup(target):
     """
     try:
         my_resolver = dns.resolver.Resolver()
+        #TODO:
+        # remove this and add ability to sec custom
+        # my_resolver.nameservers = ['10.60.4.161']
         resolved = my_resolver.resolve(target, 'A')[0].to_text()
         return resolved
     except Exception as e:
+        tqdm.tqdm.write(Fore.LIGHTRED_EX + f"Failed to resolve: {target}")
         return None
 
 
@@ -518,12 +575,16 @@ def resolve_target(thread_db, thread_sql, target=None):
         return target
     else:
         target = target.lower()
+
+        # TODO remove this comment
         resolved = get_ip_from_db_by_hostname(thread_sql, hostname=target)
+        resolved = None
         if not resolved:
             resolved = resolve_ip_by_nslookup(target=target)
             if resolved == None:
                 # tqdm.tqdm.write(Fore.LIGHTYELLOW_EX + f'Failed to resolve {target}')
                 not_resolved.append(target)
+            # TODO and this
             else:
                 db_insert_host(thread_db, thread_sql, ip=resolved, hostname=target)
 
@@ -545,36 +606,46 @@ def get_list_of_shares_from_db_for_host(target=None):
 def list_shares(db, sql, connection=None, depth=4, username=None, password=None, user_domain=None, reconnect=0,
                 timeout=5, thread_index=0):
     try:  # what if
-        if args['password']:
-            connection.login(username, password, user_domain)  # , lmhash, nthash)
-        else:
-            connection.login(username, '', user_domain, nthash=args['ntlm-hash'])
+
+        connection.login(username, password, user_domain)  # , lmhash, nthash)
+
         host_info = db_update_host_info_using_connection(db, sql, connection)
 
         target_ip = connection.getRemoteHost()
         if not target_ip:  # sometimes unknown shit happens
             raise
-        if host_info['host_domain'].lower() != user_domain.lower():
-            tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
-                            f"Thr {thread_index} - Host's {host_info['hostname']} ({host_info['ip']}) domain ({host_info['host_domain']}) not in users domain ({user_domain}), skipping...")
-            return
+        # if host_info['host_domain'].lower() != user_domain.lower():
+        #     tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
+        #                     f"Thr {thread_index} - Host's {host_info['hostname']} ({host_info['ip']}) domain ({host_info['host_domain']}) not in users domain ({user_domain}), skipping...")
+        #     return
         # db_update_host_info_using_connection(db, sql, connection)
 
         # logger.info(
         #     f'Authorized on {host_info["host_domain"]}\\{host_info["hostname"]} ({target_ip}) as {user_domain}\\{username}')
         shares = get_shares(db, sql, connection)
+        if username == '':
+            tqdm.tqdm.write(
+                Fore.LIGHTGREEN_EX + f"Null session exists on {connection.getServerName() + ('.' + host_info['host_domain'] if host_info['host_domain'] else '')} ({host_info['ip']})")
+
         # tqdm.tqdm.write(shares)
-        bad_shares = ['ADMIN$', 'IPC$']
+        bad_shares = ['ADMIN$', 'IPC$','C$']
+        tqdm.tqdm.write(
+                Fore.LIGHTYELLOW_EX + f"\nFound shares on {connection.getServerName() + ('.' + host_info['host_domain'] if host_info['host_domain'] else '')} ({host_info['ip']}):\n" \
+                    + Fore.LIGHTGREEN_EX
+                    + '\n'.join([share for share in shares]) + '\n')
+
         shares = [share for share in shares if share not in bad_shares]
         for share in shares:
             try:
                 connection.listPath(share, '*')  # if exception - no READ access
-                if share == 'C$':
+                if share == 'C$' or share == 'C':
                     tqdm.tqdm.write(
-                        Fore.LIGHTGREEN_EX + f"C$ is available on {host_info['host_domain']} {host_info['ip']}")
-
+                        Fore.LIGHTGREEN_EX + f"C$ is available on {connection.getServerName() + '.' + host_info['host_domain']} ({host_info['ip']})")
+                elif share == 'print$':
+                    continue
                 _spider(db, sql, connection, share, '.', depth)
             except Exception as e:
+                #TODO:debug log about shares and errors
                 continue
 
     except Exception as e:
@@ -582,9 +653,22 @@ def list_shares(db, sql, connection=None, depth=4, username=None, password=None,
         target = connection.getServerName().lower() + '.' + host_info['host_domain']
         target_ip = connection.getRemoteHost()
         connection.close()
+        # TODO: normal exceptions proceeding
+        if 'STATUS_ACCESS_DENIED' in str(e):
+            tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
+                            f"Thr {thread_index} - STATUS_ACCESS_DENIED on " + (
+                                f'{target} ({target_ip})' if target != target_ip else target))
+            return
+        elif 'STATUS_INVALID_PARAMETER' in str(e):
+            tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
+                            f"Thr {thread_index} - STATUS_INVALID_PARAMETER on " + (
+                                f'{target} ({target_ip})' if target != target_ip else target))
+            return
 
         tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
-                        f"Thr {thread_index} - NetBIOSTimeout while listing shares on {target} - {target_ip}{(', reconnect №' + str(reconnect)) if reconnect != 0 else ''}")
+                        f"Thr {thread_index} - Exceptions while listing shares on {target} - {target_ip}{(', reconnect №' + str(reconnect)) if reconnect != 0 else ''}\n"
+                        f"{Fore.LIGHTRED_EX} + {str(e)}")
+
         if reconnect >= 5:
             tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
                             f"Thr {thread_index} - Failed to reconnect to {target} - {target_ip} for 5 times")
@@ -625,7 +709,7 @@ def _spider(db, sql, connection, share, subfolder, depth):
     if depth == 0:
         return
     # ToDO exclude windows folder
-    if share == 'C$':
+    if share == 'C$' or share == 'C':
         if subfolder in ['.']:
             depth = 2
         elif subfolder.lower() == 'windows':
@@ -683,7 +767,6 @@ def _spider(db, sql, connection, share, subfolder, depth):
             db_insert_share_content(db, sql, **file_kwargs)
     return
 
-
 def thread_worker(thread_index=0):
     thread_db = sqlite3.connect(f'database_thread{thread_index}.db')
     thread_sql = thread_db.cursor()
@@ -714,7 +797,7 @@ def thread_worker(thread_index=0):
         connection_kwargs['thread_index'] = thread_index
 
         connection = make_connection(thread_db, thread_sql, **connection_kwargs)
-        # connection.close()
+        # make_connection returns None if not connected
         if not connection:
             continue
 
@@ -798,7 +881,7 @@ def gen_xlsx():
     db = sqlite3.connect('database.db')
     sql = db.cursor()
 
-    workbook = xlsxwriter.Workbook("smbsniper_" + datetime.datetime.now().strftime("%Y %m %d") + '.xlsx')
+    workbook = xlsxwriter.Workbook("smbsniper_" + datetime.datetime.now().strftime("%d.%m.%Y %H-%M") + '.xlsx')
     worksheet = workbook.add_worksheet("smbsniper")
     for column_number, column_name in enumerate(sql.execute("PRAGMA table_info('full');")):
         worksheet.write(0, column_number, column_name[1])
@@ -817,7 +900,9 @@ if __name__ == '__main__':
 
     get_args()
 
-    targets = parse_target_arg(args['target'])
+    targets = parse_target_arg(args['address'])
+
+    # targets = get_targets(args['address'])
 
     if not targets:
         print(Fore.LIGHTRED_EX + "No targets, exiting")
@@ -842,6 +927,7 @@ if __name__ == '__main__':
     for thread_index in range(threads_count):
         # every thread have copy of database.db
         # copies will be merged back to database.db at the end
+        # when I was writing it, I didn't know queues, make pull request if u want
         shutil.copyfile('database.db', f'database_thread{thread_index}.db')
 
         thread_kwargs = {'thread_index': thread_index}
