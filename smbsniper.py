@@ -185,7 +185,7 @@ def get_args():
     parser.add_argument('-H', '--hash', action="store",
                         dest="ntlm-hash", help='NTLM Hash', default='')
     parser.add_argument('--timeout', action="store", type=float,
-                        dest="timeout", help='timeout for connections', default=0.1)
+                        dest="timeout", help='timeout for connections', default=0.5)
 
     if len(sys.argv) == 1:
         parser.print_help()
@@ -202,7 +202,7 @@ def get_args():
     #     print(Fore.LIGHTRED_EX + "Wrong username, use user@domain.com format")
     #     sys.exit(1)
 
-    if args['password'] and args['ntlm-hash'] is not None:
+    if args['password'] is None and args['ntlm-hash'] is None:
         print(Fore.LIGHTRED_EX + "Are you dumb? Use password OR hash...")
         sys.exit(1)
 
@@ -664,6 +664,17 @@ def list_shares(db, sql, connection=None, depth=4, username=None, password=None,
                             f"Thr {thread_index} - STATUS_INVALID_PARAMETER on " + (
                                 f'{target} ({target_ip})' if target != target_ip else target))
             return
+        elif 'STATUS_LOGON_TYPE_NOT_GRANTED' in str(e):
+            tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
+                            f"Thr {thread_index} - STATUS_LOGON_TYPE_NOT_GRANTED on " + (
+                                f'{target} ({target_ip})' if target != target_ip else target))
+            return
+        elif 'STATUS_LOGON_FAILURE' in str(e):
+            tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
+                            f"Thr {thread_index} - STATUS_LOGON_FAILURE on " + (
+                                f'{target} ({target_ip})' if target != target_ip else target))
+            return
+
 
         tqdm.tqdm.write(Fore.LIGHTYELLOW_EX +
                         f"Thr {thread_index} - Exceptions while listing shares on {target} - {target_ip}{(', reconnect №' + str(reconnect)) if reconnect != 0 else ''}\n"
