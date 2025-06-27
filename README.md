@@ -4,7 +4,9 @@
 
 ## Как юзать
 ```
-usage: python3 ./smbsniper.py target (or targetfile.txt) -u user@domain [-p password] [-t threads count]
+usage:
+python3 ./smbsniper.py domain/user:password@targets.txt [-t threads count]
+python3 ./smbsniper.py domain/user:password@192.168.0.0/24 [-t threads count]
 
 Handy SMB script
 
