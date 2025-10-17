@@ -43,3 +43,8 @@ python3 ./smbsniper.py consoso.com/admin@192.168.0.0-192.168.0.255
 ```
 python3 ./smbsniper.py 192.168.0.0/24 -t 4 -e 'print$'
 ```
+
+### Pass the Hash
+```
+python3 ./smbsniper.py domain.com/user@192.168.0.0/24 -t 4 -H B4B9B02E6F09A9BD760F388B67351E2B
+```
