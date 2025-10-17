@@ -41,40 +41,40 @@ closed_445 = []
 not_resolved = []
 no_null_session = []
 
-interesting_filenames = [
-    '\.wim',
-    '\.ovpn',
-    '\.pfx',
-    '\.bat',
-    '\.ps1',
-    '\.conf',
-    '\.vmdk',
-    '\.config',
-    '\.xlsm',
-    '\.docm',
-    '\.vnc',
-    '\.vbs',
-    '\.php',
-    '\.asp',
-    '\.aspx',
-
-    'id.rsa',
-    'unattend.*\.xml',
-    'ntuser\.dat',
-    'consolehost_history\.txt',
-    'commonsetting\.ini',
-    'bootstrap.*\.ini',
-
-    'password', 'парол',
-    'sensitive',
-    'admin',
-    'login',
-    'secret',
-    'creds',
-    'credential',
-    '/Protect/S-1-5'
-
-]
+# interesting_filenames = [
+#     '\.wim',
+#     '\.ovpn',
+#     '\.pfx',
+#     '\.bat',
+#     '\.ps1',
+#     '\.conf',
+#     '\.vmdk',
+#     '\.config',
+#     '\.xlsm',
+#     '\.docm',
+#     '\.vnc',
+#     '\.vbs',
+#     '\.php',
+#     '\.asp',
+#     '\.aspx',
+#
+#     'id.rsa',
+#     'unattend.*\.xml',
+#     'ntuser\.dat',
+#     'consolehost_history\.txt',
+#     'commonsetting\.ini',
+#     'bootstrap.*\.ini',
+#
+#     'password', 'парол',
+#     'sensitive',
+#     'admin',
+#     'login',
+#     'secret',
+#     'creds',
+#     'credential',
+#     '/Protect/S-1-5'
+#
+# ]
 
 
 def db_init(db, sql, close=False):
@@ -604,11 +604,12 @@ def get_list_of_shares_from_db_for_host(target=None):
 
 
 def list_shares(db, sql, connection=None, depth=4, username=None, password=None, user_domain=None, reconnect=0,
-                timeout=5, thread_index=0):
+                timeout=5, thread_index=0, nthash=None):
     try:  # what if
-
-        connection.login(username, password, user_domain)  # , lmhash, nthash)
-
+        if password:
+            connection.login(username, password, user_domain)  # , lmhash, nthash)
+        else:
+            connection.login(username, "", user_domain, "aad3b435b51404eeaad3b435b51404ee", nthash)
         host_info = db_update_host_info_using_connection(db, sql, connection)
 
         target_ip = connection.getRemoteHost()
@@ -628,7 +629,7 @@ def list_shares(db, sql, connection=None, depth=4, username=None, password=None,
                 Fore.LIGHTGREEN_EX + f"Null session exists on {connection.getServerName() + ('.' + host_info['host_domain'] if host_info['host_domain'] else '')} ({host_info['ip']})")
 
         # tqdm.tqdm.write(shares)
-        bad_shares = ['ADMIN$', 'IPC$','C$']
+        bad_shares = ['ADMIN$', 'IPC$']
         tqdm.tqdm.write(
                 Fore.LIGHTYELLOW_EX + f"\nFound shares on {connection.getServerName() + ('.' + host_info['host_domain'] if host_info['host_domain'] else '')} ({host_info['ip']}):\n" \
                     + Fore.LIGHTGREEN_EX
@@ -817,7 +818,10 @@ def thread_worker(thread_index=0):
         login_kwargs['username'] = args['username']
 
         login_kwargs['user_domain'] = args['domain']  # .split('.')[0].upper()
-        login_kwargs['password'] = args['password']
+        if args['ntlm-hash']:
+            login_kwargs['nthash'] = args['ntlm-hash']
+        else:
+            login_kwargs['password'] = args['password']
         login_kwargs['depth'] = args['depth']
         login_kwargs['thread_index'] = thread_index
 
